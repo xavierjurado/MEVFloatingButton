@@ -26,6 +26,15 @@ typedef NS_ENUM(NSInteger, MEFloatingButtonState) {
     MEFloatingButtonStateDidDisappear
 };
 
+@interface MEVFloatingButtonDelegateBox: NSObject
+
+@property (nonatomic, weak) id <MEVFloatingButtonDelegate> floatingButtonDelegate;
+
+@end
+
+@implementation MEVFloatingButtonDelegateBox
+
+@end
 
 @interface MEVFloatingButton ()
 
@@ -330,7 +339,9 @@ void Swizzle(Class c, SEL orig, SEL new)
 
 - (void)setFloatingButtonDelegate:(id<MEVFloatingButtonDelegate>)floatingButtonDelegate
 {
-    objc_setAssociatedObject(self, kFloatingButtonDelegate, floatingButtonDelegate, OBJC_ASSOCIATION_ASSIGN);
+    MEVFloatingButtonDelegateBox *container = [[MEVFloatingButtonDelegateBox alloc] init];
+    container.floatingButtonDelegate = floatingButtonDelegate;
+    objc_setAssociatedObject(self, kFloatingButtonDelegate, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 - (void)setFloatingButtonView:(MEVFloatingButton *)floatingButton
@@ -348,7 +359,8 @@ void Swizzle(Class c, SEL orig, SEL new)
 
 - (id<MEVFloatingButtonDelegate>)floatingButtonDelegate
 {
-    return objc_getAssociatedObject(self, kFloatingButtonDelegate);
+    MEVFloatingButtonDelegateBox *container = objc_getAssociatedObject(self, kFloatingButtonDelegate);
+    return container.floatingButtonDelegate;
 }
 
 
