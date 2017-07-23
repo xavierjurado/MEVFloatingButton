@@ -26,13 +26,108 @@ typedef NS_ENUM(NSInteger, MEFloatingButtonState) {
     MEFloatingButtonStateDidDisappear
 };
 
-@interface MEVFloatingButtonDelegateBox: NSObject
+#pragma mark - Associated View
 
-@property (nonatomic, weak) id <MEVFloatingButtonDelegate> floatingButtonDelegate;
+@protocol MEVFloatingButtonAssociatedViewDelegate <NSObject>
+
+- (void)mev_willMoveToWindow:(UIWindow *)window;
+- (void)mev_observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context;
 
 @end
 
-@implementation MEVFloatingButtonDelegateBox
+@interface MEVFloatingButtonAssociatedView : UIView
+
+@property (nonatomic, weak) id <MEVFloatingButtonDelegate> floatingButtonDelegate;
+@property (nonatomic, weak) id <MEVFloatingButtonAssociatedViewDelegate> delegate;
+@property (nonatomic) BOOL isObsering;
+
+- (instancetype)initWithDelegate:(id <MEVFloatingButtonAssociatedViewDelegate>)delegate;
+- (void)startObservingScrollView:(UIScrollView *)scrollView;
+
+@end
+
+@implementation MEVFloatingButtonAssociatedView
+
+static NSString *const kObserverContentOffset = @"contentOffset";
+static NSString *const kObserverContentSize = @"contentSize";
+static NSString *const kObserverFrame = @"frame";
+
+#pragma mark Initialization
+
+- (instancetype)initWithDelegate:(id <MEVFloatingButtonAssociatedViewDelegate>)delegate
+{
+    self = [super init];
+    if (self) {
+        _delegate = delegate;
+    }
+    return self;
+}
+
+#pragma mark Observation
+
+- (void)startObservingScrollView:(UIScrollView *)scrollView
+{
+    if (self.isObsering) {
+        return;
+    }
+
+    [scrollView addObserver:self forKeyPath:kObserverContentOffset options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld context:nil];
+    [scrollView addObserver:self forKeyPath:kObserverContentSize options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld context:nil];
+    [scrollView addObserver:self forKeyPath:kObserverFrame options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld context:nil];
+
+    self.isObsering = YES;
+}
+
+- (void)stopObseringScrollView:(UIScrollView *)scrollView
+{
+    if (!self.isObsering) {
+        return;
+    }
+
+    [scrollView removeObserver:self forKeyPath:kObserverContentOffset context:nil];
+    [scrollView removeObserver:self forKeyPath:kObserverContentSize context:nil];
+    [scrollView removeObserver:self forKeyPath:kObserverFrame context:nil];
+
+    self.isObsering = NO;
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+    [self.delegate mev_observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
+#pragma mark View lifecycle
+
+void AssertViewIsKindOfScrollView(UIView *view, void(^success)(UIScrollView *)) {
+    BOOL sanityCheck = [view isKindOfClass:[UIScrollView class]];
+    NSCAssert(sanityCheck, @"Attaching the view to an undefined superview");
+    if (sanityCheck) {
+        success((UIScrollView *)view);
+    }
+}
+
+- (void)willMoveToSuperview:(UIView *)newSuperview
+{
+    [super willMoveToSuperview:newSuperview];
+
+    BOOL detaching = (newSuperview == nil) && (self.superview != nil);
+
+    if (detaching) {
+        AssertViewIsKindOfScrollView(self.superview, ^(UIScrollView *scrollView) {
+            [self stopObseringScrollView:scrollView];
+        });
+    }
+}
+
+- (void)willMoveToWindow:(UIWindow *)newWindow
+{
+    [super willMoveToWindow:newWindow];
+    [self.delegate mev_willMoveToWindow:newWindow];
+}
+
+- (void)dealloc
+{
+    NSAssert(!_isObsering, @"Associated view dealloced while still observing our superview");
+}
 
 @end
 
@@ -255,15 +350,17 @@ typedef NS_ENUM(NSInteger, MEFloatingButtonState) {
 
 @end
 
+#pragma mark - UIScrollView+FloatingButtonAssociatedView
+
+@interface UIScrollView (FloatingButtonAssociatedView) <MEVFloatingButtonAssociatedViewDelegate>
+
+@end
+
+
 
 #pragma mark - UIScrollView+FloatingButton
 
-static char const *const kFloatingButtonDelegate = "floatingButtonDelegate";
 static char const *const kFloatingButtonView = "floatingButton";
-
-static NSString *const kObserverContentOffset = @"contentOffset";
-static NSString *const kObserverContentSize = @"contentSize";
-static NSString *const kObserverFrame = @"frame";
 
 static float const kFloatingButtonDefaultTime = 2.0f;
 
@@ -273,85 +370,18 @@ static float const kFloatingButtonDefaultFromBottomAnimationTime = 0.6f;
 
 @implementation UIScrollView (FloatingButton)
 
-
-#pragma mark - Initialization (private)
-
-+ (void)load
-{
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        
-        // Swizzle
-        Swizzle([self class], NSSelectorFromString(@"dealloc"), @selector(mev_dealloc));
-        Swizzle([self class], @selector(willMoveToWindow:), @selector(mev_willMoveToWindow:));
-        Swizzle([self class], @selector(didMoveToWindow), @selector(mev_didMoveToWindow));
-    });
-}
-
-
-#pragma mark - An a little bit of swizzling (private)
-
-void Swizzle(Class c, SEL orig, SEL new)
-{
-    Method origMethod = class_getInstanceMethod(c, orig);
-    Method newMethod = class_getInstanceMethod(c, new);
-    if(class_addMethod(c, orig, method_getImplementation(newMethod), method_getTypeEncoding(newMethod)))
-        class_replaceMethod(c, new, method_getImplementation(origMethod), method_getTypeEncoding(origMethod));
-    else
-        method_exchangeImplementations(origMethod, newMethod);
-}
-
-- (void)mev_dealloc
-{    
-    @try {
-        [self removeObserver:self forKeyPath:kObserverContentOffset context:nil];
-        [self removeObserver:self forKeyPath:kObserverContentSize context:nil];
-        [self removeObserver:self forKeyPath:kObserverFrame context:nil];
-    } @catch(id exception) {
-        // Do nothing, obviously it wasn't attached because an exception was thrown
-    }
-    
-    // This calls original dealloc method
-    [self mev_dealloc];
-}
-
-
-- (void)mev_willMoveToWindow:(UIWindow *)newWindow
-{
-    if (!newWindow) {
-        if (self.floatingButton.displayMode != MEVFloatingButtonDisplayModeAlways &&
-            self.floatingButton.displayMode != MEVFloatingButtonDisplayModeNone) {
-            [self mev_stopTimer];
-            [self mev_didDisappear];
-        }
-    }
-    
-    [self mev_willMoveToWindow:newWindow];
-}
-
-- (void)mev_didMoveToWindow
-{
-    [self mev_didMoveToWindow];
-}
-
-
 #pragma mark - Setters (Public)
 
 - (void)setFloatingButtonDelegate:(id<MEVFloatingButtonDelegate>)floatingButtonDelegate
 {
-    MEVFloatingButtonDelegateBox *container = [[MEVFloatingButtonDelegateBox alloc] init];
-    container.floatingButtonDelegate = floatingButtonDelegate;
-    objc_setAssociatedObject(self, kFloatingButtonDelegate, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    self.associatedView.floatingButtonDelegate = floatingButtonDelegate;
 }
 
 - (void)setFloatingButtonView:(MEVFloatingButton *)floatingButton
 {
     objc_setAssociatedObject(self, kFloatingButtonView, floatingButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    
-    // Add observers
-    [self addObserver:self forKeyPath:kObserverContentOffset options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld context:nil];
-    [self addObserver:self forKeyPath:kObserverContentSize options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld context:nil];
-    [self addObserver:self forKeyPath:kObserverFrame options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld context:nil];
+
+    [self.associatedView startObservingScrollView:self];
 }
 
 
@@ -359,8 +389,7 @@ void Swizzle(Class c, SEL orig, SEL new)
 
 - (id<MEVFloatingButtonDelegate>)floatingButtonDelegate
 {
-    MEVFloatingButtonDelegateBox *container = objc_getAssociatedObject(self, kFloatingButtonDelegate);
-    return container.floatingButtonDelegate;
+    return self.associatedView.floatingButtonDelegate;
 }
 
 
@@ -369,6 +398,19 @@ void Swizzle(Class c, SEL orig, SEL new)
 - (MEVFloatingButton *)floatingButton
 {
    return objc_getAssociatedObject(self, kFloatingButtonView);
+}
+
+- (MEVFloatingButtonAssociatedView *)associatedView {
+    for (UIView *view in self.subviews) {
+        if ([view isMemberOfClass:[MEVFloatingButtonAssociatedView class]]) {
+            return (MEVFloatingButtonAssociatedView *)view;
+        }
+    }
+
+    // associating new instance
+    MEVFloatingButtonAssociatedView *view = [[MEVFloatingButtonAssociatedView alloc] initWithDelegate:self];
+    [self addSubview:view];
+    return view;
 }
 
 
@@ -598,9 +640,24 @@ void Swizzle(Class c, SEL orig, SEL new)
     });
 }
 
-#pragma mark - KVO Methods (Private)
+@end
 
--(void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context
+#pragma mark - UIScrollView+FloatingButtonAssociatedView
+
+@implementation UIScrollView (FloatingButtonAssociatedView)
+
+- (void)mev_willMoveToWindow:(UIWindow *)newWindow
+{
+    if (!newWindow) {
+        if (self.floatingButton.displayMode != MEVFloatingButtonDisplayModeAlways &&
+            self.floatingButton.displayMode != MEVFloatingButtonDisplayModeNone) {
+            [self mev_stopTimer];
+            [self mev_didDisappear];
+        }
+    }
+}
+
+-(void)mev_observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context
 {
     if ([keyPath isEqualToString:kObserverFrame] || [self mev_isViewValid] == NO) {
         [self mev_validateView];
